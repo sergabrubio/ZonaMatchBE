@@ -1,0 +1,8 @@
+  **/bin/
+  **/obj/
+  .git/
+  .vs/
+motis-data/logs
+motis-data/**/*.log
+DATOS-ZONA-AZURE*
+**/appsettings.Development.json

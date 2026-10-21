@@ -461,6 +461,7 @@ ehthumbs_vista.db
 
 # Dump file
 *.stackdump
+*.dump
 
 # Folder config file
 [Dd]esktop.ini
@@ -487,3 +488,4 @@ restore-geo.log
 *.osm.pbf
 # Datos abiertos descargados por etl/descargar_datos.py (censo, delitos, GTFS)
 datos/
+motis-data/

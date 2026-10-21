@@ -1,0 +1,31 @@
+# Plantilla para construir la imagen de MOTIS con los datos de ruteo incluidos.
+# Copiar junto a la carpeta "motis-data" (ver abajo) y construir:
+#
+#   1) Exportar los datos ya importados del volumen de docker-compose.
+#      El nombre real del volumen es "<carpeta-del-proyecto>_motis_data"
+#      (ver `docker volume ls`):
+#        docker run --rm -v <proyecto>_motis_data:/data -v "${PWD}/motis-data:/export" alpine cp -a /data/. /export/
+#   2) Construir y publicar (GHCR; paquete publico, igual que el backend):
+#        docker build -f Dockerfile.motis -t ghcr.io/<usuario>/zonamatch-motis:<tag> .
+#        docker push ghcr.io/<usuario>/zonamatch-motis:<tag>
+#
+#   3) IMPORTANTE: antes de construir, crear un archivo ".dockerignore" junto a este
+#      Dockerfile con estas dos lineas. La carpeta logs (unos 600 MB de logs de la
+#      importacion) no hace falta para servir y duplicaria el tamano de la imagen:
+#        motis-data/logs
+#        motis-data/**/*.log
+#
+# Los datos son OpenStreetMap (ODbL) y GTFS: verificar la licencia y la
+# atribucion de cada fuente GTFS antes de publicar la imagen.
+# Cuando cambie el GTFS o el OSM hay que repetir los pasos con una etiqueta nueva.
+
+FROM ghcr.io/motis-project/motis:2.11.3
+
+COPY motis-data/ /data/
+# La carpeta de logs se excluye con .dockerignore; se deja vacia por si el servidor la espera.
+RUN mkdir -p /data/logs
+# No hace falta crear "importacion-ok": solo lo espera el comando de docker-compose.
+# Si ya viene en motis-data, se copia tal cual (es un archivo vacio).
+
+ENTRYPOINT ["/motis"]
+CMD ["server", "-d", "/data"]
