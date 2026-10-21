@@ -18,9 +18,9 @@ namespace ZonaMatch.Api.Controllers
         }
 
         // POST /Puntajes
-        // Body: { "zonas": ["villa-luro"], "criterios": { "seguridad": "alta" },
+        // Body: { "zonaInicial": "villa-luro", "zonasAgregadas": [], "criterios": { "seguridad": "alta" },
         //         "lugares": [{ "nombre": "Trabajo", "latitude": -34.6, "longitude": -58.38, "prioridad": "Alta", "tiempoMax": "45 min" }],
-        //         "alquilerMaximo": "800000", "movilidad": ["transporte-publico"], "incluirCercanas": true }
+        //         "alquilerMaximo": "800000", "movilidad": ["transporte-publico"] }
         [HttpPost]
         [ProducesResponseType<PuntajesDto>(StatusCodes.Status200OK)]
         [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]

@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using ZonaMatch.Application.DTOs;
-using ZonaMatch.Application.DTOs.Group;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Requests;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Responses;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Domain.Entities;
@@ -9,14 +10,13 @@ using ZonaMatch.Domain.Puntaje;
 namespace ZonaMatch.Application.UseCases.Groups;
 
 /// <summary>
-/// Calcula el puntaje individual de cada integrante con el mismo motor que el análisis personal,
-/// y combina los resultados por zona usando los pesos configurados en el grupo.
+/// Scores zones containing group members' places and their contiguous neighbors, then combines the results using the configured weights.
 /// </summary>
 public sealed partial class CalcularPuntajeEnGrupo
 {
     private const int ViajesEnParalelo = 6;
-    private const int VecinasCandidatas = 6;
-    private const int VecinasDevueltas = 4;
+    private const int RecomendadasDevueltas = 4;
+    private const int ZonasTopAutomatico = 5;
 
     private readonly IGroupRepository _groups;
     private readonly IPerfilRepository _profiles;
@@ -35,10 +35,10 @@ public sealed partial class CalcularPuntajeEnGrupo
         _routing = routing;
     }
 
-    public async Task<PuntajesEnGrupoResponse> EjecutarAsync(
+    public async Task<GroupRankingResponse> EjecutarAsync(
         Guid groupId,
         Guid currentUserId,
-        CalcularPuntajeEnGrupoRequest request,
+        CalculateGroupScoreRequest request,
         CancellationToken cancellationToken = default)
     {
         var group = await _groups.GetDetailsByIdAsync(groupId, cancellationToken)
@@ -48,20 +48,18 @@ public sealed partial class CalcularPuntajeEnGrupo
             throw new AccesoDenegadoException("No pertenecés a este grupo.");
 
         var participantIds = group.Participants.Select(participant => participant.Id).ToHashSet();
-        var weights = ValidateWeights(request.PesosParticipantes, participantIds);
-        var slugs = request.Zonas
+        var weights = ValidateWeights(request.ParticipantWeights, participantIds);
+        var slugs = (request.AddedZones ?? [])
             .Select(slug => slug?.Trim() ?? string.Empty)
             .Where(slug => slug.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        if (slugs.Length == 0)
-            throw new DatosInvalidosException("Elegí al menos una zona.");
 
         var universe = await _zoneProfiles.ListarAsync(cancellationToken);
         var zonesBySlug = universe.ToDictionary(zone => zone.Slug, StringComparer.Ordinal);
-        var selectedZones = slugs.Where(zonesBySlug.ContainsKey).Select(slug => zonesBySlug[slug]).ToArray();
-        if (selectedZones.Length == 0)
-            throw new NoEncontradoException("Todavía no hay datos para calcular el puntaje de estas zonas.");
+        var addedZones = slugs.Where(zonesBySlug.ContainsKey).Select(slug => zonesBySlug[slug]).ToArray();
+        if (addedZones.Length != slugs.Length)
+            throw new NoEncontradoException("No se encontraron una o más zonas agregadas al análisis.");
 
         var profiles = await _profiles.ObtenerDeUsuariosAsync(
             group.Participants.Select(participant => participant.UserId).Distinct().ToArray(),
@@ -77,27 +75,32 @@ public sealed partial class CalcularPuntajeEnGrupo
                 var profile = profilesByUserId[participant.UserId];
                 return new MemberInput(
                     participant,
-                    BuildRequest(profile, request.AlquilerMaximo),
+                    BuildRequest(profile, request.MaximumRent),
                     ModosViaje.DesdeMovilidad(profile.Movilidad ?? []),
                     profile.Puntos.OrderBy(point => point.Orden).ToArray());
             })
             .ToArray();
 
-        var selectedSlugs = selectedZones.Select(zone => zone.Slug).ToHashSet(StringComparer.Ordinal);
-        var neighborSlugs = await _zoneProfiles.ListarVecinasAsync(selectedSlugs, cancellationToken);
-        var candidateZones = neighborSlugs
-            .Where(slug => !selectedSlugs.Contains(slug) && zonesBySlug.ContainsKey(slug))
-            .Distinct(StringComparer.Ordinal)
-            .Select(slug => zonesBySlug[slug])
-            .Select(zone => (Zone: zone, Score: CalculateCandidateScore(zone, members, weights, motor)))
-            .Where(candidate => candidate.Score is not null)
-            .OrderByDescending(candidate => candidate.Score)
-            .ThenBy(candidate => candidate.Zone.Nombre, StringComparer.CurrentCulture)
-            .Take(VecinasCandidatas)
-            .Select(candidate => candidate.Zone)
+        var locations = members
+            .Where(member => weights[member.Participant.Id] > 0)
+            .SelectMany(member => member.Request.Lugares)
+            .Where(place => place.TieneUbicacion)
+            .Select(place => (Latitud: place.Latitud!.Value, Longitud: place.Longitud!.Value))
             .ToArray();
+        var nearbySlugs = locations.Length == 0
+            ? universe.Select(zone => zone.Slug).ToArray()
+            : await _zoneProfiles.ListarZonasDelEntornoAsync(locations, cancellationToken);
+        var nearbyZones = nearbySlugs
+            .Where(zonesBySlug.ContainsKey)
+            .Select(slug => zonesBySlug[slug])
+            .ToArray();
+        if (locations.Length > 0 && nearbyZones.Length == 0)
+            throw new DatosInvalidosException("No se encontraron zonas del catálogo que contengan los puntos de interés de los participantes.");
 
-        var zonesToCalculate = selectedZones.Concat(candidateZones).ToArray();
+        var zonesToCalculate = nearbyZones
+            .Concat(addedZones)
+            .DistinctBy(zone => zone.Slug, StringComparer.Ordinal)
+            .ToArray();
         var calculations = members
             .Select(async member =>
             {
@@ -117,37 +120,44 @@ public sealed partial class CalcularPuntajeEnGrupo
             .ToArray();
 
         var memberScores = await Task.WhenAll(calculations);
-        var hasAnyRanking = selectedZones.Any(zone => memberScores.Any(member =>
+        var hasAnyRanking = zonesToCalculate.Any(zone => memberScores.Any(member =>
             weights[member.Participant.Id] > 0 && member.Zones[zone.Slug].Resultado.Puntaje is not null));
         if (!hasAnyRanking)
-            throw new DatosInvalidosException("Ningún participante con peso positivo tiene datos suficientes para puntuar las zonas elegidas.");
+            throw new DatosInvalidosException("Ningún participante con peso positivo tiene datos suficientes para puntuar las zonas disponibles.");
 
+        var rankedCandidates = zonesToCalculate
+            .Select(zone => BuildZoneResult(zone, group.Participants, weights, memberScores))
+            .OrderByDescending(zone => zone.Score.HasValue)
+            .ThenByDescending(zone => zone.Score)
+            .ThenBy(zone => zone.Name, StringComparer.CurrentCulture)
+            .ToArray();
+
+        var rankedZones = rankedCandidates
+            .Take(ZonasTopAutomatico)
+            .Concat(addedZones.Select(zone => rankedCandidates.Single(result => result.Slug == zone.Slug)))
+            .DistinctBy(zone => zone.Slug, StringComparer.Ordinal)
+            .OrderByDescending(zone => zone.Score.HasValue)
+            .ThenByDescending(zone => zone.Score)
+            .ThenBy(zone => zone.Name, StringComparer.CurrentCulture)
+            .ToArray();
+        var zonesForExclusion = rankedZones.Select(zone => zonesBySlug[zone.Slug]).ToArray();
         var excluded = group.Participants
-            .Select(participant => Exclusion(participant, weights[participant.Id], profilesByUserId, selectedZones, memberScores))
+            .Select(participant => Exclusion(participant, weights[participant.Id], profilesByUserId, zonesForExclusion, memberScores))
             .Where(exclusion => exclusion is not null)
             .Select(exclusion => exclusion!)
             .ToArray();
 
-        var rankedZones = selectedZones
-            .Select(zone => BuildZoneResult(zone, group.Participants, weights, memberScores))
-            .OrderByDescending(zone => zone.Puntaje.HasValue)
-            .ThenByDescending(zone => zone.Puntaje)
-            .ThenBy(zone => zone.Nombre, StringComparer.CurrentCulture)
-            .ToArray();
-
-        var nearby = candidateZones
-            .Select(zone => BuildZoneResult(zone, group.Participants, weights, memberScores))
-            .Where(zone => zone.Puntaje is not null)
-            .OrderByDescending(zone => zone.Puntaje)
-            .ThenBy(zone => zone.Nombre, StringComparer.CurrentCulture)
-            .Take(VecinasDevueltas)
+        var includedSlugs = rankedZones.Select(zone => zone.Slug).ToHashSet(StringComparer.Ordinal);
+        var nearby = rankedCandidates
+            .Where(zone => !includedSlugs.Contains(zone.Slug) && zone.Score is not null)
+            .Take(RecomendadasDevueltas)
             .ToArray();
 
         var groupPoints = group.Participants
             .Where(participant => profilesByUserId.ContainsKey(participant.UserId))
             .SelectMany(participant => profilesByUserId[participant.UserId].Puntos
                 .OrderBy(point => point.Orden)
-                .Select(point => new PuntoDeInteresEnGrupoResponse(
+                .Select(point => new GroupPointOfInterestResponse(
                     point.Id,
                     participant.Id,
                     participant.User.Email,
@@ -160,11 +170,11 @@ public sealed partial class CalcularPuntajeEnGrupo
                     point.TiempoMax)))
             .ToArray();
 
-        return new PuntajesEnGrupoResponse(rankedZones, excluded, groupPoints, request.AlquilerMaximo, nearby);
+        return new GroupRankingResponse(rankedZones, excluded, groupPoints, request.MaximumRent, nearby);
     }
 
     private static IReadOnlyDictionary<Guid, decimal> ValidateWeights(
-        IReadOnlyList<PesoParticipanteRequest> requestedWeights,
+        IReadOnlyList<ParticipantWeightRequest> requestedWeights,
         IReadOnlySet<Guid> groupParticipantIds)
     {
         if (requestedWeights.Count != groupParticipantIds.Count)
@@ -175,9 +185,9 @@ public sealed partial class CalcularPuntajeEnGrupo
         {
             if (!groupParticipantIds.Contains(entry.ParticipantId))
                 throw new DatosInvalidosException("El pedido incluye a alguien que no pertenece al grupo.");
-            if (entry.Peso is < 0 or > 100)
+            if (entry.Weight is < 0 or > 100)
                 throw new DatosInvalidosException("Cada peso debe estar entre 0 y 100.");
-            if (!weights.TryAdd(entry.ParticipantId, entry.Peso))
+            if (!weights.TryAdd(entry.ParticipantId, entry.Weight))
                 throw new DatosInvalidosException("Hay participantes repetidos en la configuración de pesos.");
         }
 
@@ -250,33 +260,14 @@ public sealed partial class CalcularPuntajeEnGrupo
             : 45;
     }
 
-    private static int? CalculateCandidateScore(
-        PerfilZona zone,
-        IReadOnlyList<MemberInput> members,
-        IReadOnlyDictionary<Guid, decimal> weights,
-        MotorPuntaje motor)
-    {
-        var available = members
-            .Select(member => (Weight: weights[member.Participant.Id], Score: motor.Calcular(zone, member.Request).Puntaje))
-            .Where(entry => entry.Weight > 0 && entry.Score is not null)
-            .ToArray();
-        var totalWeight = available.Sum(entry => entry.Weight);
-
-        return totalWeight == 0
-            ? null
-            : (int)Math.Clamp(decimal.Round(
-                available.Sum(entry => entry.Score!.Value * entry.Weight) / totalWeight,
-                0, MidpointRounding.AwayFromZero), 0, 100);
-    }
-
-    private static IReadOnlyList<ViajeParticipanteEnGrupoResponse> BuildPlaceDetails(
+    private static IReadOnlyList<ParticipantTripResponse> BuildPlaceDetails(
         MemberInput member,
         IReadOnlyList<TiempoViaje?> times) => member.Points
         .Select((point, index) =>
         {
             var maximumMinutes = ParseMinutes(point.TiempoMax);
             var time = index < times.Count ? times[index] : null;
-            return new ViajeParticipanteEnGrupoResponse(
+            return new ParticipantTripResponse(
                 point.Id,
                 member.Participant.Id,
                 member.Participant.User.Email,
@@ -292,7 +283,7 @@ public sealed partial class CalcularPuntajeEnGrupo
         })
         .ToArray();
 
-    private static ZonaPuntajeEnGrupoResponse BuildZoneResult(
+    private static RankedZoneResponse BuildZoneResult(
         PerfilZona zone,
         IEnumerable<Participant> participants,
         IReadOnlyDictionary<Guid, decimal> weights,
@@ -318,7 +309,7 @@ public sealed partial class CalcularPuntajeEnGrupo
             : null;
 
         var breakdown = available
-            .Select(entry => new ParticipantePuntajeEnGrupoResponse(
+            .Select(entry => new ParticipantScoreResponse(
                 entry.Participant.Id,
                 entry.Participant.User.Email,
                 entry.Weight,
@@ -327,7 +318,7 @@ public sealed partial class CalcularPuntajeEnGrupo
                     : 0,
                 entry.Score))
             .ToArray();
-        var normalizedWeights = breakdown.ToDictionary(item => item.ParticipantId, item => item.PesoNormalizado);
+        var normalizedWeights = breakdown.ToDictionary(item => item.ParticipantId, item => item.NormalizedWeight);
 
         var componentGroups = memberScores
             .Where(member => member.Zones.ContainsKey(zone.Slug))
@@ -346,7 +337,7 @@ public sealed partial class CalcularPuntajeEnGrupo
                         0, MidpointRounding.AwayFromZero), 0, 100)
                     : null;
                 var componentParticipants = group
-                    .Select(entry => new ComponenteParticipanteEnGrupoResponse(
+                    .Select(entry => new ParticipantScoreComponentResponse(
                         entry.Member.Participant.Id,
                         entry.Member.Participant.User.Email,
                         entry.Component.Puntaje is not null && weights[entry.Member.Participant.Id] > 0 && componentWeight > 0
@@ -361,15 +352,15 @@ public sealed partial class CalcularPuntajeEnGrupo
                     ? "Promedio ponderado de los viajes individuales con datos disponibles."
                     : string.Join(" · ", details);
 
-                return new ComponentePuntajeEnGrupoResponse(group.Key, componentScore, detail, componentParticipants);
+                return new GroupScoreComponentResponse(group.Key, componentScore, detail, componentParticipants);
             })
-            .OrderBy(component => component.Criterio, StringComparer.Ordinal)
+            .OrderBy(component => component.Criterion, StringComparer.Ordinal)
             .ToArray();
 
         var participantLimits = memberScores
             .Where(member => member.Zones.ContainsKey(zone.Slug))
             .SelectMany(member => member.Zones[zone.Slug].Resultado.Limites.Select(limit =>
-                new LimitePuntajeEnGrupoResponse(
+                new ScoreLimitResponse(
                     member.Participant.Id,
                     member.Participant.User.Email,
                     normalizedWeights.GetValueOrDefault(member.Participant.Id),
@@ -378,23 +369,23 @@ public sealed partial class CalcularPuntajeEnGrupo
                     limit.Detalle)))
             .ToArray();
         var limits = participantLimits
-            .Where(limit => limit.Tipo == MotorPuntaje.LimiteAlquiler)
+            .Where(limit => limit.Type == MotorPuntaje.LimiteAlquiler)
             .Take(1)
-            .Select(limit => limit with { ParticipantId = Guid.Empty, ParticipanteNombre = "Grupo", PesoNormalizado = 100 })
-            .Concat(participantLimits.Where(limit => limit.Tipo != MotorPuntaje.LimiteAlquiler))
+            .Select(limit => limit with { ParticipantId = Guid.Empty, ParticipantName = "Grupo", NormalizedWeight = 100 })
+            .Concat(participantLimits.Where(limit => limit.Type != MotorPuntaje.LimiteAlquiler))
             .ToArray();
         var places = memberScores
             .Where(member => member.Zones.ContainsKey(zone.Slug))
-            .SelectMany(member => member.Zones[zone.Slug].Lugares)
+            .SelectMany(member => member.Zones[zone.Slug].Places)
             .ToArray();
         var rent = zone.AlquilerPromedio is { } average
-            ? new AlquilerZonaDto(average, zone.PropiedadesDisponibles ?? 0)
+            ? new ZoneRentResponse(average, zone.PropiedadesDisponibles ?? 0)
             : null;
 
-        return new ZonaPuntajeEnGrupoResponse(zone.Slug, zone.Nombre, groupScore, breakdown, componentGroups, limits, places, rent);
+        return new RankedZoneResponse(zone.Slug, zone.Nombre, groupScore, breakdown, componentGroups, limits, places, rent);
     }
 
-    private static ParticipanteExcluidoEnGrupoResponse? Exclusion(
+    private static ExcludedParticipantResponse? Exclusion(
         Participant participant,
         decimal weight,
         IReadOnlyDictionary<Guid, Contexto> profilesByUserId,
@@ -408,11 +399,11 @@ public sealed partial class CalcularPuntajeEnGrupo
             reason = "Tiene un peso asignado de 0.";
         else if (!memberScores.Any(member => member.Participant.Id == participant.Id && selectedZones.Any(zone =>
                      member.Zones.TryGetValue(zone.Slug, out var result) && result.Resultado.Puntaje is not null)))
-            reason = "No obtuvo puntajes con los datos disponibles en las zonas elegidas.";
+            reason = "No obtuvo puntajes con los datos disponibles en las zonas del ranking.";
 
         return reason is null
             ? null
-            : new ParticipanteExcluidoEnGrupoResponse(participant.Id, participant.User.Email, reason);
+            : new ExcludedParticipantResponse(participant.Id, participant.User.Email, reason);
     }
 
     [GeneratedRegex(@"\d+")]
@@ -430,5 +421,5 @@ public sealed partial class CalcularPuntajeEnGrupo
 
     private sealed record MemberZoneResult(
         ResultadoZona Resultado,
-        IReadOnlyList<ViajeParticipanteEnGrupoResponse> Lugares);
+        IReadOnlyList<ParticipantTripResponse> Places);
 }

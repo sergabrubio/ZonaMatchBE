@@ -1,6 +1,8 @@
 using System.Text.Json;
 using ZonaMatch.Application.DTOs;
-using ZonaMatch.Application.DTOs.Group;
+using ZonaMatch.Application.DTOs.Analysis.Requests;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Responses;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Application.UseCases.Comunidad;
@@ -13,14 +15,14 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-        public static AnalisisDto ADto(Analisis analisis, IEnumerable<Analisis>? versiones = null) =>
+        public static AnalysisResponse ToResponse(Analisis analisis, IEnumerable<Analisis>? versions = null) =>
             new(
                 analisis.Id,
                 analisis.Nombre,
                 analisis.AnalisisOrigenId,
                 analisis.Zonas
                     .OrderBy(z => z.Orden)
-                    .Select(z => new ZonaAnalisisDto(z.ZonaSlug, z.Nombre, z.EsInicial))
+                    .Select(z => new AnalysisZoneResponse(z.ZonaSlug, z.Nombre, z.EsInicial, z.EsAgregada))
                     .ToList(),
                 CriterioUsuario.ContextoADto(analisis.Contexto),
                 CriterioUsuario.CriteriosADto(analisis.Contexto),
@@ -29,35 +31,36 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
                 analisis.FechaActualizacion,
                 analisis.PuntajesEnGrupoJson is null
                     ? null
-                    : JsonSerializer.Deserialize<PuntajesEnGrupoResponse>(analisis.PuntajesEnGrupoJson, JsonOptions),
-                (versiones ?? [])
+                    : GroupRankingSnapshotJson.Deserialize(analisis.PuntajesEnGrupoJson, JsonOptions),
+                (versions ?? [])
                     .OrderBy(v => v.FechaCreacion)
-                    .Select(v => ADto(v))
+                    .Select(v => ToResponse(v))
                     .ToList());
 
         // Zonas del pedido: existentes, sin repetir y con a lo sumo una inicial
         public static async Task<List<AnalisisZona>> ArmarZonasAsync(
-            IReadOnlyList<ZonaAnalisisRequest> zonas, IZonaRepository repositorio, CancellationToken cancellationToken)
+            IReadOnlyList<AnalysisZoneRequest> zones, IZonaRepository repository, CancellationToken cancellationToken)
         {
-            if (zonas.Count == 0)
+            if (zones.Count == 0)
                 throw new DatosInvalidosException("Elegí al menos una zona.");
 
-            if (zonas.Select(z => z.Slug).Distinct(StringComparer.Ordinal).Count() != zonas.Count)
+            if (zones.Select(zone => zone.Slug).Distinct(StringComparer.Ordinal).Count() != zones.Count)
                 throw new DatosInvalidosException("Hay zonas repetidas en el análisis.");
 
-            if (zonas.Count(z => z.EsInicial) > 1)
+            if (zones.Count(zone => zone.IsInitial) > 1)
                 throw new DatosInvalidosException("Solo puede haber una zona inicial.");
 
-            foreach (var zona in zonas)
-                await repositorio.ValidarExisteAsync(zona.Slug, cancellationToken);
+            foreach (var zone in zones)
+                await repository.ValidarExisteAsync(zone.Slug, cancellationToken);
 
-            return zonas
-                .Select((zona, indice) => new AnalisisZona
+            return zones
+                .Select((zone, index) => new AnalisisZona
                 {
-                    Orden = indice + 1,
-                    ZonaSlug = zona.Slug,
-                    Nombre = zona.Nombre.Trim(),
-                    EsInicial = zona.EsInicial,
+                    Orden = index + 1,
+                    ZonaSlug = zone.Slug,
+                    Nombre = zone.Name.Trim(),
+                    EsInicial = zone.IsInitial,
+                    EsAgregada = zone.IsAdded,
                 })
                 .ToList();
         }

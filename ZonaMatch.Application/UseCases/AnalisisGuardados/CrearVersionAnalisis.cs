@@ -1,4 +1,6 @@
 using ZonaMatch.Application.DTOs;
+using ZonaMatch.Application.DTOs.Analysis.Requests;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Application.UseCases.Perfil;
@@ -26,8 +28,8 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             _reloj = reloj;
         }
 
-        public async Task<AnalisisDto> EjecutarAsync(
-            Guid analisisId, Guid usuarioId, CrearVersionAnalisisRequest solicitud, CancellationToken cancellationToken = default)
+        public async Task<AnalysisResponse> EjecutarAsync(
+            Guid analisisId, Guid usuarioId, CreateAnalysisVersionRequest solicitud, CancellationToken cancellationToken = default)
         {
             var pedido = await _analisis.ObtenerAsync(analisisId, usuarioId, cancellationToken)
                 ?? throw new AnalisisNoEncontradoException();
@@ -46,13 +48,20 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
                 FechaCreacion = ahora,
                 FechaActualizacion = ahora,
             };
-            CriterioUsuario.Aplicar(contexto, solicitud.Criterio, catalogo);
+            CriterioUsuario.Aplicar(contexto, solicitud.Criterion, catalogo);
 
-            var zonas = solicitud.Zonas is { } pedidas
-                ? await AnalisisMapeo.ArmarZonasAsync(pedidas, _zonas, cancellationToken)
+            var zonas = solicitud.Zones is { } requestedZones
+                ? await AnalisisMapeo.ArmarZonasAsync(requestedZones, _zonas, cancellationToken)
                 : pedido.Zonas
                     .OrderBy(z => z.Orden)
-                    .Select(z => new AnalisisZona { Orden = z.Orden, ZonaSlug = z.ZonaSlug, Nombre = z.Nombre, EsInicial = z.EsInicial })
+                    .Select(z => new AnalisisZona
+                    {
+                        Orden = z.Orden,
+                        ZonaSlug = z.ZonaSlug,
+                        Nombre = z.Nombre,
+                        EsInicial = z.EsInicial,
+                        EsAgregada = z.EsAgregada,
+                    })
                     .ToList();
 
             var versiones = await _analisis.ListarVersionesAsync(original.Id, cancellationToken);
@@ -60,9 +69,9 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             var version = new Analisis
             {
                 UsuarioId = usuarioId,
-                Nombre = string.IsNullOrWhiteSpace(solicitud.Nombre)
+                Nombre = string.IsNullOrWhiteSpace(solicitud.Name)
                     ? NombreDeVersion(original.Nombre, versiones.Count + 2)
-                    : solicitud.Nombre.Trim(),
+                    : solicitud.Name.Trim(),
                 Contexto = contexto,
                 AnalisisOrigenId = original.Id,
                 FechaCreacion = ahora,
@@ -73,7 +82,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             _analisis.Agregar(version);
             await _analisis.GuardarCambiosAsync(cancellationToken);
 
-            return AnalisisMapeo.ADto(version);
+            return AnalisisMapeo.ToResponse(version);
         }
 
         // "Cerca del trabajo (2)": el original cuenta como la 1; se recorta el nombre para no pasar el maximo

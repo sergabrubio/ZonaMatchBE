@@ -12,22 +12,6 @@ namespace ZonaMatch.Application.DTOs
         PuntosDto Puntos,
         DateTimeOffset FechaActualizacion);
 
-    // Un analisis guardado; en el listado, cada original trae sus versiones
-    public record AnalisisDto(
-        Guid Id,
-        string Nombre,
-        Guid? AnalisisOrigenId,
-        IReadOnlyList<ZonaAnalisisDto> Zonas,
-        ContextoDto Contexto,
-        Dictionary<string, string> Criterios,
-        PuntosDto Puntos,
-        DateTimeOffset FechaCreacion,
-        DateTimeOffset FechaActualizacion,
-        PuntajesEnGrupoResponse? PuntajesEnGrupo,
-        IReadOnlyList<AnalisisDto> Versiones);
-
-    public record ZonaAnalisisDto(string Slug, string Nombre, bool EsInicial);
-
     public record ContextoDto(
         int Personas,
         IReadOnlyList<string?> Edades,

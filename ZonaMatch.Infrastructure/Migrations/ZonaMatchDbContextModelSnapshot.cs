@@ -120,6 +120,12 @@ namespace ZonaMatch.Infrastructure.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("orden");
 
+                    b.Property<bool>("EsAgregada")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("es_agregada");
+
                     b.Property<bool>("EsInicial")
                         .HasColumnType("boolean")
                         .HasColumnName("es_inicial");

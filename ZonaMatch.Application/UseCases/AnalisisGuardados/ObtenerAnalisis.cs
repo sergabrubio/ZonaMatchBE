@@ -1,4 +1,5 @@
 using ZonaMatch.Application.DTOs;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 
@@ -14,7 +15,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             _analisis = analisis;
         }
 
-        public async Task<AnalisisDto> EjecutarAsync(Guid id, Guid usuarioId, CancellationToken cancellationToken = default)
+        public async Task<AnalysisResponse> EjecutarAsync(Guid id, Guid usuarioId, CancellationToken cancellationToken = default)
         {
             var analisis = await _analisis.ObtenerAsync(id, usuarioId, cancellationToken)
                 ?? throw new AnalisisNoEncontradoException();
@@ -23,7 +24,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
                 ? await _analisis.ListarVersionesAsync(analisis.Id, cancellationToken)
                 : [];
 
-            return AnalisisMapeo.ADto(analisis, versiones);
+            return AnalisisMapeo.ToResponse(analisis, versiones);
         }
     }
 }

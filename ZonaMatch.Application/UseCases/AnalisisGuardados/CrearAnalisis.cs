@@ -1,4 +1,6 @@
 using ZonaMatch.Application.DTOs;
+using ZonaMatch.Application.DTOs.Analysis.Requests;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Domain.Entities;
@@ -22,19 +24,19 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             _reloj = reloj;
         }
 
-        public async Task<AnalisisDto> EjecutarAsync(
-            Guid usuarioId, CrearAnalisisRequest solicitud, CancellationToken cancellationToken = default)
+        public async Task<AnalysisResponse> EjecutarAsync(
+            Guid usuarioId, CreateAnalysisRequest solicitud, CancellationToken cancellationToken = default)
         {
             var perfil = await _perfiles.ObtenerDeUsuarioAsync(usuarioId, cancellationToken)
                 ?? throw new PerfilNoEncontradoException();
 
-            var zonas = await AnalisisMapeo.ArmarZonasAsync(solicitud.Zonas, _zonas, cancellationToken);
+            var zonas = await AnalisisMapeo.ArmarZonasAsync(solicitud.Zones, _zonas, cancellationToken);
             var ahora = _reloj.GetUtcNow();
 
             var analisis = new Analisis
             {
                 UsuarioId = usuarioId,
-                Nombre = solicitud.Nombre.Trim(),
+                Nombre = solicitud.Name.Trim(),
                 Contexto = perfil.CopiarParaAnalisis(ahora),
                 FechaCreacion = ahora,
                 FechaActualizacion = ahora,
@@ -44,7 +46,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             _analisis.Agregar(analisis);
             await _analisis.GuardarCambiosAsync(cancellationToken);
 
-            return AnalisisMapeo.ADto(analisis);
+            return AnalisisMapeo.ToResponse(analisis);
         }
     }
 }

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using NpgsqlTypes;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Domain.Puntaje;
 using ZonaMatch.Infrastructure.Data;
@@ -26,6 +27,9 @@ namespace ZonaMatch.Infrastructure.Repositories
                        ST_Transform(z.geom, 3857) AS way
                 FROM {Geo}.zonas z
                 WHERE z.elegida
+                  -- This OSM locality is a duplicate representation of all CABA; other same-area
+                  -- zones (for example neighborhoods matching their comuna) are valid ranking zones.
+                  AND z.slug <> 'buenos-aires'
                 ORDER BY z.slug, z.nivel DESC
             ),
             etiquetados AS (
@@ -105,13 +109,58 @@ namespace ZonaMatch.Infrastructure.Repositories
             JOIN alquiler a USING (osm_id)
             """;
 
-        // Vecinas: se tocan o se superponen, y son del mismo tipo (zona grande o no)
-        private static readonly string SqlVecinas = $"""
-            SELECT DISTINCT v.slug AS "Value"
-            FROM {Geo}.zonas a
-            JOIN {Geo}.zonas v
-              ON v.elegida AND v.slug <> a.slug AND (v.nivel <= 5) = (a.nivel <= 5) AND ST_Intersects(a.geom, v.geom)
-            WHERE a.elegida AND a.slug = ANY(@slugs)
+        private static readonly string SqlZonasDelEntorno = $"""
+            WITH zonas_validas AS (
+                -- Buenos Aires repeats the full CABA boundary; keep other same-area neighborhoods.
+                SELECT z.*
+                FROM {Geo}.zonas z
+                WHERE z.elegida
+                  AND z.slug <> 'buenos-aires'
+            ),
+            puntos AS (
+                SELECT p.orden, ST_SetSRID(ST_MakePoint(p.longitud, p.latitud), 4326) AS geom
+                FROM unnest(@latitudes::double precision[], @longitudes::double precision[])
+                     WITH ORDINALITY AS p(latitud, longitud, orden)
+            ),
+            contenedoras AS (
+                SELECT p.orden, z.osm_id, z.slug, z.nivel, z.geom
+                FROM puntos p
+                JOIN zonas_validas z ON ST_Covers(z.geom, p.geom)
+            ),
+            mas_especificas AS (
+                SELECT c.*
+                FROM contenedoras c
+                WHERE c.nivel = (
+                    SELECT max(c2.nivel)
+                    FROM contenedoras c2
+                    WHERE c2.orden = c.orden
+                )
+            ),
+            segmentos AS (
+                SELECT a.orden AS origen, b.orden AS destino,
+                       ST_MakeLine(a.geom, b.geom) AS geom,
+                       greatest(za.nivel, zb.nivel) AS nivel
+                FROM puntos a
+                JOIN puntos b ON a.orden < b.orden
+                JOIN mas_especificas za ON za.orden = a.orden
+                JOIN mas_especificas zb ON zb.orden = b.orden
+            )
+            SELECT DISTINCT candidatas.slug AS "Value"
+            FROM (
+                SELECT vecina.slug
+                FROM mas_especificas base
+                JOIN zonas_validas vecina
+                  ON vecina.nivel = base.nivel
+                 AND ST_Intersects(vecina.geom, base.geom)
+
+                UNION
+
+                SELECT intermedia.slug
+                FROM segmentos tramo
+                JOIN zonas_validas intermedia
+                  ON intermedia.nivel = tramo.nivel
+                 AND ST_Intersects(intermedia.geom, tramo.geom)
+            ) candidatas
             """;
 
         private readonly ZonaMatchDbContext _dbContext;
@@ -128,13 +177,23 @@ namespace ZonaMatch.Infrastructure.Repositories
         public Task<IReadOnlyList<PerfilZona>> ListarAsync(CancellationToken cancellationToken = default) =>
             _cache.ObtenerAsync(CalcularAsync, cancellationToken);
 
-        public async Task<IReadOnlyList<string>> ListarVecinasAsync(
-            IReadOnlyCollection<string> slugs, CancellationToken cancellationToken = default)
+        public async Task<IReadOnlyList<string>> ListarZonasDelEntornoAsync(
+            IReadOnlyCollection<(double Latitud, double Longitud)> ubicaciones,
+            CancellationToken cancellationToken = default)
         {
+            if (ubicaciones.Count == 0)
+                return [];
+
+            var latitudes = ubicaciones.Select(point => point.Latitud).ToArray();
+            var longitudes = ubicaciones.Select(point => point.Longitud).ToArray();
+
             try
             {
                 return await _dbContext.Database
-                    .SqlQueryRaw<string>(SqlVecinas, new NpgsqlParameter("slugs", slugs.ToArray()))
+                    .SqlQueryRaw<string>(
+                        SqlZonasDelEntorno,
+                        new NpgsqlParameter("latitudes", NpgsqlDbType.Array | NpgsqlDbType.Double) { Value = latitudes },
+                        new NpgsqlParameter("longitudes", NpgsqlDbType.Array | NpgsqlDbType.Double) { Value = longitudes })
                     .ToListAsync(cancellationToken);
             }
             catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UndefinedTable)

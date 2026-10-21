@@ -1,9 +1,12 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.JsonWebTokens;
 using ZonaMatch.Api.Authentication;
 using ZonaMatch.Application.DTOs;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
 using ZonaMatch.Application.DTOs.Group;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Requests;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Responses;
 using ZonaMatch.Application.UseCases.Groups;
 
 // For more information on enabling Web API for empty projects, visit https://go.microsoft.com/fwlink/?LinkID=397860
@@ -60,16 +63,16 @@ namespace ZonaMatch.Api.Controllers
             return Ok(response);
         }
 
-        // POST /Group/{groupId}/CalcularPuntajeEnGrupo
+        // POST /Group/{groupId}/CalcularPuntajeEnGrupo — calculates the automatic top five and recommendations.
         [HttpPost("{groupId:guid}/CalcularPuntajeEnGrupo")]
-        [ProducesResponseType<PuntajesEnGrupoResponse>(StatusCodes.Status200OK)]
+        [ProducesResponseType<GroupRankingResponse>(StatusCodes.Status200OK)]
         [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
         [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
         [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> CalcularPuntajeEnGrupo(
             [FromRoute] Guid groupId,
-            [FromBody] CalcularPuntajeEnGrupoRequest request,
+            [FromBody] CalculateGroupScoreRequest request,
             CancellationToken cancellationToken)
         {
             if (User.UsuarioId() is not { } userId)
@@ -81,14 +84,14 @@ namespace ZonaMatch.Api.Controllers
 
         // POST /Group/{groupId}/Analisis — guarda el resultado compartido en los análisis del usuario actual.
         [HttpPost("{groupId:guid}/Analisis")]
-        [ProducesResponseType<AnalisisDto>(StatusCodes.Status201Created)]
+        [ProducesResponseType<AnalysisResponse>(StatusCodes.Status201Created)]
         [ProducesResponseType<ValidationProblemDetails>(StatusCodes.Status400BadRequest)]
         [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
         [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
         [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
         public async Task<IActionResult> GuardarAnalisisEnGrupo(
             [FromRoute] Guid groupId,
-            [FromBody] GuardarAnalisisEnGrupoRequest request,
+            [FromBody] SaveGroupAnalysisRequest request,
             CancellationToken cancellationToken)
         {
             if (User.UsuarioId() is not { } userId)

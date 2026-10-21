@@ -30,18 +30,20 @@ namespace ZonaMatch.Tests.UseCases.Puntajes
             AlquilerPromedio = 600_000,
         });
 
-        private static CalcularPuntajesRequest Pedido(params string[] zonas) => new()
+        private static CalcularPuntajesRequest Pedido() => new()
         {
-            Zonas = [.. zonas],
             Criterios = new() { ["seguridad"] = "alta", ["inventado"] = "alta", ["salud"] = "urgente" },
         };
 
         [Fact]
-        public async Task Sin_datos_de_ninguna_zona_avisa()
+        public async Task Rechaza_zonas_agregadas_inexistentes()
         {
             Zona("villa-luro", 30);
 
-            await Assert.ThrowsAsync<NoEncontradoException>(() => _casoDeUso.EjecutarAsync(Pedido("no-existe")));
+            var pedido = Pedido();
+            pedido.ZonasAgregadas = ["no-existe"];
+
+            await Assert.ThrowsAsync<NoEncontradoException>(() => _casoDeUso.EjecutarAsync(pedido));
         }
 
         [Fact]
@@ -49,24 +51,26 @@ namespace ZonaMatch.Tests.UseCases.Puntajes
         {
             Zona("villa-luro", 30);
 
-            var zona = Assert.Single((await _casoDeUso.EjecutarAsync(Pedido("villa-luro"))).Zonas);
+            var zona = Assert.Single((await _casoDeUso.EjecutarAsync(Pedido())).Zonas);
 
             Assert.Equal(["seguridad"], zona.Componentes.Select(c => c.Criterio));
         }
 
         [Fact]
-        public async Task Las_cercanas_no_repiten_analizadas_y_van_de_mejor_a_peor()
+        public async Task El_top_automatico_incluye_la_zona_inicial_y_recomienda_las_siguientes()
         {
             Zona("villa-luro", 50);
             for (var i = 1; i <= 7; i++)
                 Zona($"vecina-{i}", i * 10);
-            _perfiles.Vecinas.AddRange(["villa-luro", .. Enumerable.Range(1, 7).Select(i => $"vecina-{i}")]);
+            var pedido = Pedido();
+            pedido.ZonaInicial = "vecina-7";
 
-            var cercanas = (await _casoDeUso.EjecutarAsync(Pedido("villa-luro"))).Cercanas;
+            var resultado = await _casoDeUso.EjecutarAsync(pedido);
 
-            Assert.Equal(CalcularPuntajes.VecinasDevueltas, cercanas.Count);
-            Assert.DoesNotContain(cercanas, z => z.Slug == "villa-luro");
-            Assert.Equal(["vecina-1", "vecina-2", "vecina-3", "vecina-4"], cercanas.Select(z => z.Slug));
+            Assert.Equal(CalcularPuntajes.ZonasTopAutomatico, resultado.Zonas.Count);
+            Assert.Contains(resultado.Zonas, zona => zona.Slug == "vecina-7");
+            Assert.Equal(3, resultado.Cercanas.Count);
+            Assert.DoesNotContain(resultado.Cercanas, zona => resultado.Zonas.Any(top => top.Slug == zona.Slug));
         }
 
         [Fact]
@@ -74,7 +78,7 @@ namespace ZonaMatch.Tests.UseCases.Puntajes
         {
             Zona("villa-luro", 30);
             _ruteo.Disponible = false;
-            var pedido = Pedido("villa-luro");
+            var pedido = Pedido();
             pedido.Lugares = [new LugarPuntajeRequest { Nombre = "Trabajo", Latitude = -34.6, Longitude = -58.4, TiempoMax = "30 min" }];
 
             var lugar = Assert.Single(Assert.Single((await _casoDeUso.EjecutarAsync(pedido)).Zonas).Lugares);
@@ -88,7 +92,7 @@ namespace ZonaMatch.Tests.UseCases.Puntajes
         public async Task Lee_el_tope_de_alquiler_como_lo_tipea_el_usuario()
         {
             Zona("villa-luro", 30);
-            var pedido = Pedido("villa-luro");
+            var pedido = Pedido();
             pedido.AlquilerMaximo = "$ 500.000";
 
             var zona = Assert.Single((await _casoDeUso.EjecutarAsync(pedido)).Zonas);
@@ -102,7 +106,7 @@ namespace ZonaMatch.Tests.UseCases.Puntajes
         public async Task Mide_los_viajes_segun_la_movilidad_del_hogar()
         {
             Zona("villa-luro", 30);
-            var pedido = Pedido("villa-luro");
+            var pedido = Pedido();
             pedido.Movilidad = ["vehiculo", "a-pie"];
             pedido.Lugares = [new LugarPuntajeRequest { Nombre = "Trabajo", Latitude = -34.6, Longitude = -58.4 }];
 
@@ -115,13 +119,14 @@ namespace ZonaMatch.Tests.UseCases.Puntajes
         private sealed class FakePerfilesZonaRepository : IPerfilesZonaRepository
         {
             public List<PerfilZona> Zonas { get; } = [];
-            public List<string> Vecinas { get; } = [];
 
             public Task<IReadOnlyList<PerfilZona>> ListarAsync(CancellationToken cancellationToken = default) =>
                 Task.FromResult<IReadOnlyList<PerfilZona>>(Zonas);
 
-            public Task<IReadOnlyList<string>> ListarVecinasAsync(IReadOnlyCollection<string> slugs, CancellationToken cancellationToken = default) =>
-                Task.FromResult<IReadOnlyList<string>>(Vecinas);
+            public Task<IReadOnlyList<string>> ListarZonasDelEntornoAsync(
+                IReadOnlyCollection<(double Latitud, double Longitud)> ubicaciones,
+                CancellationToken cancellationToken = default) =>
+                Task.FromResult<IReadOnlyList<string>>(Zonas.Select(zone => zone.Slug).ToArray());
         }
 
         private sealed class FakeRuteoClient : IRuteoClient

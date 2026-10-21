@@ -6,16 +6,15 @@ using ZonaMatch.Domain.Puntaje;
 
 namespace ZonaMatch.Application.UseCases.Puntajes
 {
-    // Puntaje de las zonas de un analisis y de las zonas vecinas que mejor le cierran al usuario.
-    // Las vecinas se ordenan primero sin viajes (es rapido) y solo a las mejores se les miden los viajes.
+    // Ranks zones containing the user's places and their contiguous neighbors.
     public partial class CalcularPuntajes
     {
+        public const int ZonasTopAutomatico = 5;
+
         // Tiempo maximo de viaje si el lugar no lo indica
         public const int TiempoMaximoPorDefecto = 45;
 
-        // Vecinas a las que se les miden los viajes, y cuantas se devuelven
-        public const int VecinasCandidatas = 6;
-        public const int VecinasDevueltas = 4;
+        public const int RecomendadasDevueltas = 4;
 
         // Viajes que se piden al ruteo a la vez
         private const int ViajesEnParalelo = 6;
@@ -33,51 +32,94 @@ namespace ZonaMatch.Application.UseCases.Puntajes
         {
             var universo = await _perfiles.ListarAsync(cancellationToken);
             var porSlug = universo.ToDictionary(z => z.Slug);
-
-            var slugs = solicitud.Zonas.Select(s => s.Trim()).Where(s => s.Length > 0).Distinct().ToList();
-            var analizadas = slugs.Where(porSlug.ContainsKey).Select(s => porSlug[s]).ToList();
-
-            if (analizadas.Count == 0)
-                throw new NoEncontradoException("Todavía no hay datos para calcular el puntaje de estas zonas.");
+            if (universo.Count == 0)
+                throw new NoEncontradoException("Todavía no hay zonas disponibles para calcular el ranking.");
 
             var pedido = ArmarPedido(solicitud);
             var modo = ModosViaje.DesdeMovilidad(solicitud.Movilidad);
             var motor = new MotorPuntaje(universo);
+            var zonasAgregadas = ResolverZonasAgregadas(solicitud.ZonasAgregadas, porSlug);
+            var zonaInicialSlug = solicitud.ZonaInicial?.Trim();
+            var zonaInicial = string.IsNullOrWhiteSpace(zonaInicialSlug)
+                ? null
+                : porSlug.TryGetValue(zonaInicialSlug, out var encontrada)
+                    ? encontrada
+                    : throw new NoEncontradoException("No hay datos para la zona inicial indicada.");
 
-            var candidatas = solicitud.IncluirCercanas
-                ? await CandidatasAsync(analizadas, porSlug, motor, pedido, cancellationToken)
-                : [];
+            var ubicaciones = pedido.Lugares
+                .Where(lugar => lugar.TieneUbicacion)
+                .Select(lugar => (Latitud: lugar.Latitud!.Value, Longitud: lugar.Longitud!.Value))
+                .ToArray();
+            var slugsDelEntorno = ubicaciones.Length == 0
+                ? universo.Select(zona => zona.Slug).ToArray()
+                : await _perfiles.ListarZonasDelEntornoAsync(ubicaciones, cancellationToken);
+            var zonasDelEntorno = slugsDelEntorno
+                .Where(porSlug.ContainsKey)
+                .Select(slug => porSlug[slug])
+                .ToArray();
+            if (ubicaciones.Length > 0 && zonasDelEntorno.Length == 0)
+                throw new DatosInvalidosException("No se encontraron zonas del catálogo que contengan los puntos de interés indicados.");
 
-            var tiempos = await MedirViajesAsync([.. analizadas, .. candidatas], pedido.Lugares, modo, cancellationToken);
+            var candidatas = zonasDelEntorno
+                .Concat(zonasAgregadas)
+                .Concat(zonaInicial is { } inicial ? [inicial] : Array.Empty<PerfilZona>())
+                .DistinctBy(zona => zona.Slug, StringComparer.Ordinal)
+                .ToArray();
 
-            var zonas = analizadas.Select(z => motor.Calcular(z, pedido, tiempos[z.Slug])).ToList();
-            var cercanas = candidatas
-                .Select(z => motor.Calcular(z, pedido, tiempos[z.Slug]))
-                .Where(r => r.Puntaje is not null)
-                .OrderByDescending(r => r.Puntaje)
-                .Take(VecinasDevueltas)
-                .ToList();
+            var tiempos = await MedirViajesAsync(candidatas, pedido.Lugares, modo, cancellationToken);
+            var ranking = candidatas
+                .Select(zona => motor.Calcular(zona, pedido, tiempos[zona.Slug]))
+                .OrderByDescending(resultado => resultado.Puntaje.HasValue)
+                .ThenByDescending(resultado => resultado.Puntaje)
+                .ThenBy(resultado => resultado.Zona.Nombre, StringComparer.CurrentCulture)
+                .ToArray();
 
-            return new PuntajesDto(ModosViaje.Codigo(modo), zonas.Select(ADto).ToList(), cercanas.Select(ADto).ToList());
+            var top = ranking.Take(ZonasTopAutomatico).ToList();
+            if (zonaInicial is not null && top.All(resultado => resultado.Zona.Slug != zonaInicial.Slug))
+            {
+                if (top.Count == ZonasTopAutomatico)
+                    top.RemoveAt(top.Count - 1);
+                top.Add(ranking.Single(resultado => resultado.Zona.Slug == zonaInicial.Slug));
+                top = top
+                    .OrderByDescending(resultado => resultado.Puntaje.HasValue)
+                    .ThenByDescending(resultado => resultado.Puntaje)
+                    .ThenBy(resultado => resultado.Zona.Nombre, StringComparer.CurrentCulture)
+                    .ToList();
+            }
+
+            var incluidas = top
+                .Concat(zonasAgregadas.Select(zona => ranking.Single(resultado => resultado.Zona.Slug == zona.Slug)))
+                .DistinctBy(resultado => resultado.Zona.Slug, StringComparer.Ordinal)
+                .OrderByDescending(resultado => resultado.Puntaje.HasValue)
+                .ThenByDescending(resultado => resultado.Puntaje)
+                .ThenBy(resultado => resultado.Zona.Nombre, StringComparer.CurrentCulture)
+                .ToArray();
+            var slugsIncluidos = incluidas.Select(resultado => resultado.Zona.Slug).ToHashSet(StringComparer.Ordinal);
+            var recomendadas = ranking
+                .Where(resultado => !slugsIncluidos.Contains(resultado.Zona.Slug))
+                .Take(RecomendadasDevueltas)
+                .ToArray();
+
+            return new PuntajesDto(
+                ModosViaje.Codigo(modo),
+                incluidas.Select(ADto).ToArray(),
+                recomendadas.Select(ADto).ToArray());
         }
 
-        // Las vecinas con mejor puntaje sin contar los viajes (todavia no se midieron)
-        private async Task<List<PerfilZona>> CandidatasAsync(
-            IReadOnlyList<PerfilZona> analizadas, IReadOnlyDictionary<string, PerfilZona> porSlug, MotorPuntaje motor,
-            PedidoPuntaje pedido, CancellationToken cancellationToken)
+        private static PerfilZona[] ResolverZonasAgregadas(
+            IReadOnlyCollection<string>? slugsSolicitados,
+            IReadOnlyDictionary<string, PerfilZona> porSlug)
         {
-            var slugsAnalizados = analizadas.Select(z => z.Slug).ToHashSet();
-            var vecinas = await _perfiles.ListarVecinasAsync(slugsAnalizados, cancellationToken);
+            var slugs = (slugsSolicitados ?? [])
+                .Select(slug => slug?.Trim() ?? string.Empty)
+                .Where(slug => slug.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            var faltantes = slugs.Where(slug => !porSlug.ContainsKey(slug)).ToArray();
+            if (faltantes.Length > 0)
+                throw new NoEncontradoException("No se encontraron una o más zonas agregadas al análisis.");
 
-            return vecinas
-                .Where(s => !slugsAnalizados.Contains(s) && porSlug.ContainsKey(s))
-                .Select(s => porSlug[s])
-                .Select(z => (Zona: z, Puntaje: motor.Calcular(z, pedido).Puntaje))
-                .Where(x => x.Puntaje is not null)
-                .OrderByDescending(x => x.Puntaje)
-                .Take(VecinasCandidatas)
-                .Select(x => x.Zona)
-                .ToList();
+            return slugs.Select(slug => porSlug[slug]).ToArray();
         }
 
         // Un viaje por zona y lugar con ubicacion, desde el centro de la zona. Si el ruteo no responde, se estima.

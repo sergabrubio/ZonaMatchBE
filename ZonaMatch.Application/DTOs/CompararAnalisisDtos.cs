@@ -1,5 +1,5 @@
 using System.ComponentModel.DataAnnotations;
-using ZonaMatch.Application.DTOs.Group;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Responses;
 
 namespace ZonaMatch.Application.DTOs
 {
@@ -18,5 +18,5 @@ namespace ZonaMatch.Application.DTOs
         string Nombre,
         string ModoViaje,
         IReadOnlyList<PuntajeZonaDto> Zonas,
-        PuntajesEnGrupoResponse? PuntajesEnGrupo = null);
+        GroupRankingResponse? PuntajesEnGrupo = null);
 }

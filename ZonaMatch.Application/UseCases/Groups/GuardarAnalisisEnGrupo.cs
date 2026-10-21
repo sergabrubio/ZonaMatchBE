@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ZonaMatch.Application.DTOs;
-using ZonaMatch.Application.DTOs.Group;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Requests;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Application.UseCases.AnalisisGuardados;
@@ -32,13 +33,13 @@ public sealed class GuardarAnalisisEnGrupo
         _clock = clock;
     }
 
-    public async Task<AnalisisDto> EjecutarAsync(
+    public async Task<AnalysisResponse> EjecutarAsync(
         Guid groupId,
         Guid currentUserId,
-        GuardarAnalisisEnGrupoRequest request,
+        SaveGroupAnalysisRequest request,
         CancellationToken cancellationToken = default)
     {
-        var name = request.Nombre.Trim();
+        var name = request.Name.Trim();
         if (name.Length == 0)
             throw new DatosInvalidosException("El nombre es obligatorio.");
 
@@ -46,11 +47,11 @@ public sealed class GuardarAnalisisEnGrupo
         var ranked = await _calculateRanking.EjecutarAsync(
             groupId,
             currentUserId,
-            new CalcularPuntajeEnGrupoRequest
+            new CalculateGroupScoreRequest
             {
-                Zonas = request.Zonas.Select(zone => zone.Slug).ToList(),
-                PesosParticipantes = request.PesosParticipantes,
-                AlquilerMaximo = request.AlquilerMaximo,
+                AddedZones = request.AddedZones ?? [],
+                ParticipantWeights = request.ParticipantWeights,
+                MaximumRent = request.MaximumRent,
             },
             cancellationToken);
 
@@ -63,7 +64,7 @@ public sealed class GuardarAnalisisEnGrupo
             FechaCreacion = now,
             FechaActualizacion = now,
         };
-        var zones = await AnalisisMapeo.ArmarZonasAsync(request.Zonas, _zones, cancellationToken);
+        var zones = await AnalisisMapeo.ArmarZonasAsync(request.Zones, _zones, cancellationToken);
 
         var analysis = new Analisis
         {
@@ -79,6 +80,6 @@ public sealed class GuardarAnalisisEnGrupo
         _analyses.Agregar(analysis);
         await _analyses.GuardarCambiosAsync(cancellationToken);
 
-        return AnalisisMapeo.ADto(analysis);
+        return AnalisisMapeo.ToResponse(analysis);
     }
 }

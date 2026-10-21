@@ -1,4 +1,5 @@
 using ZonaMatch.Application.DTOs;
+using ZonaMatch.Application.DTOs.Analysis.Requests;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Domain.Entities;
 
@@ -89,7 +90,7 @@ namespace ZonaMatch.Tests.UseCases.Perfil
             Puntos = new PuntosRequest { AlquilerMaximo = alquiler, Lugares = lugares ?? [] },
         };
 
-        public static ZonaAnalisisRequest Zona(string slug = FakeZonaRepository.Zona, bool inicial = false) =>
-            new() { Slug = slug, Nombre = "Villa Luro, CABA", EsInicial = inicial };
+        public static AnalysisZoneRequest Zona(string slug = FakeZonaRepository.Zona, bool inicial = false) =>
+            new() { Slug = slug, Name = "Villa Luro, CABA", IsInitial = inicial };
     }
 }

@@ -2,14 +2,15 @@ using System.ComponentModel.DataAnnotations;
 
 namespace ZonaMatch.Application.DTOs
 {
-    // POST /Puntajes — puntaje de las zonas de un analisis (y de las cercanas) para un criterio.
-    // Lo usan visitantes y usuarios: el criterio viaja en el pedido, no se lee del perfil.
+    // POST /Puntajes — automatic ranking around geocoded places, with an optional initial zone and added zones.
+    // Visitors and signed-in users send the scoring context in the request.
     public class CalcularPuntajesRequest
     {
-        [Required(ErrorMessage = "Las zonas son obligatorias.")]
-        [MinLength(1, ErrorMessage = "Elegí al menos una zona.")]
-        [MaxLength(10, ErrorMessage = "Se pueden comparar hasta 10 zonas.")]
-        public List<string> Zonas { get; set; } = [];
+        [MaxLength(5, ErrorMessage = "Se pueden agregar hasta 5 zonas después del ranking.")]
+        public List<string> ZonasAgregadas { get; set; } = [];
+
+        [StringLength(100)]
+        public string? ZonaInicial { get; set; }
 
         // Clave: id del criterio (seguridad, movilidad, espacios-verdes, educacion, salud); valor: baja|media|alta
         public Dictionary<string, string?> Criterios { get; set; } = [];
@@ -21,10 +22,8 @@ namespace ZonaMatch.Application.DTOs
         [StringLength(30)]
         public string? AlquilerMaximo { get; set; }
 
-        // Movilidad del hogar (a-pie, transporte-publico, vehiculo, bici): define como se miden los viajes
+        // Mobility options (walking, public transit, car, cycling) determine how trips are measured.
         public List<string> Movilidad { get; set; } = [];
-
-        public bool IncluirCercanas { get; set; } = true;
     }
 
     public class LugarPuntajeRequest

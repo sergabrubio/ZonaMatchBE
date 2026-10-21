@@ -1,4 +1,5 @@
 using ZonaMatch.Application.DTOs;
+using ZonaMatch.Application.DTOs.Analysis.Responses;
 using ZonaMatch.Application.Interfaces;
 
 namespace ZonaMatch.Application.UseCases.AnalisisGuardados
@@ -14,7 +15,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
             _analisis = analisis;
         }
 
-        public async Task<IReadOnlyList<AnalisisDto>> EjecutarAsync(Guid usuarioId, CancellationToken cancellationToken = default)
+        public async Task<IReadOnlyList<AnalysisResponse>> EjecutarAsync(Guid usuarioId, CancellationToken cancellationToken = default)
         {
             var todos = await _analisis.ListarDeUsuarioAsync(usuarioId, cancellationToken);
             var versionesPorOrigen = todos
@@ -32,7 +33,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
                     .Select(v => v.FechaActualizacion)
                     .Append(x.Original.FechaActualizacion)
                     .Max())
-                .Select(x => AnalisisMapeo.ADto(x.Original, x.Versiones))
+                .Select(x => AnalisisMapeo.ToResponse(x.Original, x.Versiones))
                 .ToList();
         }
     }

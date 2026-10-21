@@ -171,6 +171,7 @@ namespace ZonaMatch.Infrastructure.Data
                 e.HasKey(x => new { x.AnalisisId, x.Orden });
                 e.Property(x => x.ZonaSlug).HasMaxLength(100).IsRequired();
                 e.Property(x => x.Nombre).HasMaxLength(150).IsRequired();
+                e.Property(x => x.EsAgregada).HasDefaultValue(false);
             });
 
             modelBuilder.Entity<Persona>(e =>

@@ -16,5 +16,8 @@ namespace ZonaMatch.Domain.Entities
 
         // La zona de partida que eligio en el asistente
         public bool EsInicial { get; set; }
+
+        // Zona añadida manualmente al ranking automático.
+        public bool EsAgregada { get; set; }
     }
 }

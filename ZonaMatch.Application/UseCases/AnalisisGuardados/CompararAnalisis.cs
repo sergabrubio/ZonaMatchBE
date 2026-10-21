@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using System.Text.Json;
 using ZonaMatch.Application.DTOs;
-using ZonaMatch.Application.DTOs.Group;
+using ZonaMatch.Application.DTOs.GroupAnalysis.Responses;
 using ZonaMatch.Application.Exceptions;
 using ZonaMatch.Application.Interfaces;
 using ZonaMatch.Application.UseCases.Puntajes;
@@ -122,17 +122,17 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
 
         private static AnalisisComparadoDto FromGroupSnapshot(Analisis analysis, string serializedRanking)
         {
-            PuntajesEnGrupoResponse? snapshot;
+            GroupRankingResponse? snapshot;
             try
             {
-                snapshot = JsonSerializer.Deserialize<PuntajesEnGrupoResponse>(serializedRanking, JsonOptions);
+                snapshot = GroupRankingSnapshotJson.Deserialize(serializedRanking, JsonOptions);
             }
             catch (JsonException)
             {
                 throw new DatosInvalidosException($"El análisis de grupo '{analysis.Nombre}' no tiene un resultado válido guardado.");
             }
 
-            if (snapshot?.Zonas is not { } snapshotZones)
+            if (snapshot?.Zones is not { } snapshotZones)
                 throw new DatosInvalidosException($"El análisis de grupo '{analysis.Nombre}' no tiene un resultado válido guardado.");
 
             var scoresBySlug = snapshotZones
@@ -149,9 +149,9 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
 
             var rankedGroupZones = savedZones
                 .Select(zone => scoresBySlug[zone.ZonaSlug])
-                .OrderByDescending(zone => zone.Puntaje.HasValue)
-                .ThenByDescending(zone => zone.Puntaje)
-                .ThenBy(zone => zone.Nombre, StringComparer.CurrentCulture)
+                .OrderByDescending(zone => zone.Score.HasValue)
+                .ThenByDescending(zone => zone.Score)
+                .ThenBy(zone => zone.Name, StringComparer.CurrentCulture)
                 .ToArray();
             var zones = rankedGroupZones
                 .Select(ToDto)
@@ -162,7 +162,7 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
                 analysis.Nombre,
                 "grupo",
                 zones,
-                snapshot with { Zonas = rankedGroupZones, Cercanas = [] });
+                snapshot with { Zones = rankedGroupZones, NearbyZones = [] });
         }
 
         private async Task<Dictionary<string, IReadOnlyList<TiempoViaje?>>> MeasureTripsAsync(
@@ -256,25 +256,27 @@ namespace ZonaMatch.Application.UseCases.AnalisisGuardados
                     ? new AlquilerZonaDto(average, result.Zona.PropiedadesDisponibles ?? 0)
                     : null);
 
-        private static PuntajeZonaDto ToDto(ZonaPuntajeEnGrupoResponse result) =>
+        private static PuntajeZonaDto ToDto(RankedZoneResponse result) =>
             new(
                 result.Slug,
-                result.Nombre,
-                result.Puntaje,
-                result.Componentes?.Select(component => new ComponentePuntajeDto(
-                    component.Criterio,
+                result.Name,
+                result.Score,
+                result.Components?.Select(component => new ComponentePuntajeDto(
+                    component.Criterion,
                     "ponderado",
-                    component.Puntaje,
-                    component.Detalle)).ToArray() ?? [],
-                result.Limites?.Select(limit => new LimitePuntajeDto(
-                    limit.Tipo,
-                    limit.Cumple,
-                    limit.Detalle)).ToArray() ?? [],
-                result.Lugares?.Select(place => new TiempoLugarDto(
-                    $"{place.ParticipanteNombre}: {place.Nombre}",
-                    place.Minutos,
-                    place.MaximoMinutos,
-                    place.Estimado)).ToArray() ?? [],
-                result.Alquiler);
+                    component.Score,
+                    component.Details)).ToArray() ?? [],
+                result.Limits?.Select(limit => new LimitePuntajeDto(
+                    limit.Type,
+                    limit.IsMet,
+                    limit.Details)).ToArray() ?? [],
+                result.Places?.Select(place => new TiempoLugarDto(
+                    $"{place.ParticipantName}: {place.Name}",
+                    place.Minutes,
+                    place.MaximumMinutes,
+                    place.IsEstimated)).ToArray() ?? [],
+                result.Rent is { } rent
+                    ? new AlquilerZonaDto(rent.Average, rent.AvailableProperties)
+                    : null);
     }
 }
